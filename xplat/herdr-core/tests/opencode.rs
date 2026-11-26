@@ -178,7 +178,7 @@ fn the_pane_gets_the_root_session_in_its_folder_used_last_since_it_started() {
 #[test]
 fn copy_paths_are_only_for_session_ids() {
     let dir = std::path::Path::new("/c");
-    assert_eq!(opencode::copy_path(dir, "ses_Ab1").map(|p| p.to_string_lossy().into_owned()), Some("/c/ses_Ab1.jsonl".into()));
+    assert_eq!(opencode::copy_path(dir, "ses_Ab1"), Some(dir.join("ses_Ab1.jsonl")));
     assert_eq!(opencode::copy_path(dir, "../x"), None);
 }
 
