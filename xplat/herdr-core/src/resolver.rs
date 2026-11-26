@@ -59,11 +59,19 @@ pub struct Need {
     pub cwd: String,
     /// hc panes: process ids to start from (foreground first). Empty for TUI panes (found by `HERDR_PANE_ID`).
     pub pids: Vec<i32>,
+    /// The terminal's title, as the agent sets it (opencode: `OC | <session title>`). Empty when not known.
+    pub title: String,
 }
 
 impl Need {
     pub fn new(pane_id: &str, kind: &str, cwd: &str, pids: Vec<i32>) -> Need {
-        Need { pane_id: pane_id.into(), kind: kind.into(), cwd: cwd.into(), pids }
+        Need { pane_id: pane_id.into(), kind: kind.into(), cwd: cwd.into(), pids, title: String::new() }
+    }
+
+    /// With the terminal's title (opencode names its session there).
+    pub fn with_title(mut self, title: &str) -> Need {
+        self.title = title.into();
+        self
     }
 }
 
@@ -537,7 +545,10 @@ impl SessionResolver {
         let cli = opencode::Cli { exe: opencode::exe_for(agent), server: l.server.clone() };
         let id = match l.session {
             Some(s) => s,
-            None => opencode::pick(&opencode::sessions(&cli, &n.cwd)?, &n.cwd, agent.start.timestamp_millis() as f64, rivals)?,
+            None => {
+                let shown = opencode::Shown { title: &n.title, started_ms: agent.start.timestamp_millis() as f64, rivals, resume: l.resume };
+                opencode::pick(&opencode::sessions(&cli, &n.cwd)?, &n.cwd, &shown)?
+            }
         };
         let path = opencode::copy_path(&self.opencode_dir, &id)?;
         let p = path.to_string_lossy().into_owned();

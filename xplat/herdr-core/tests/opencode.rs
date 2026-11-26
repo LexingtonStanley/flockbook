@@ -146,15 +146,20 @@ fn the_command_line_names_the_session_and_server() {
     assert_eq!((l.session.as_deref(), l.server.as_deref(), l.standalone), (Some("ses_x"), Some("http://h:1"), false));
     let l = opencode::launch(&["opencode", "--session=ses_y", "--standalone"]);
     assert_eq!((l.session.as_deref(), l.standalone), (Some("ses_y"), true));
-    assert_eq!(opencode::launch(&["opencode", "-c"]), opencode::Launch::default(), "--continue: the server's choice, found by use");
+    assert!(opencode::launch(&["C:\\x\\opencode.exe", "-c"]).resume, "--continue");
+    assert_eq!(opencode::launch(&["opencode"]), opencode::Launch::default());
 }
 
 fn session(id: &str, dir: &str, updated: f64, parent: Option<&str>) -> Value {
-    let mut s = json!({"id": id, "location": {"directory": dir}, "time": {"created": updated - 10.0, "updated": updated}});
+    let mut s = json!({"id": id, "title": format!("Title of {id}"), "location": {"directory": dir}, "time": {"created": updated - 10.0, "updated": updated}});
     if let Some(p) = parent {
         s["parentID"] = json!(p);
     }
     s
+}
+
+fn shown(title: &str, started_ms: f64, rivals: bool, resume: bool) -> opencode::Shown<'_> {
+    opencode::Shown { title, started_ms, rivals, resume }
 }
 
 #[test]
@@ -166,13 +171,35 @@ fn the_pane_gets_the_root_session_in_its_folder_used_last_since_it_started() {
         session("ses_else", "/elsewhere", 9_900.0, None),
         session("ses_mid", "/w/", 8_000.0, None),
     ]});
-    assert_eq!(opencode::pick(&list, "/w", 7_000.0, false).as_deref(), Some("ses_new"), "a subagent's session is not the pane's");
-    assert_eq!(opencode::pick(&list, "/w", 20_000.0, false), None, "nothing used since the agent started: no conversation yet");
-    assert_eq!(opencode::pick(&list, "/w", 9_004.0, false).as_deref(), Some("ses_new"), "a few seconds' slack");
-    assert_eq!(opencode::pick(&list, "/w", 7_000.0, true), None, "two opencode in one folder: no guess");
+    let pick = |s: &opencode::Shown| opencode::pick(&list, "/w", s);
+    assert_eq!(pick(&shown("", 7_000.0, false, false)).as_deref(), Some("ses_new"), "a subagent's session is not the pane's");
+    assert_eq!(pick(&shown("", 20_000.0, false, false)), None, "nothing used since the agent started: no conversation yet");
+    assert_eq!(pick(&shown("", 9_004.0, false, false)).as_deref(), Some("ses_new"), "a few seconds' slack");
+    assert_eq!(pick(&shown("", 7_000.0, true, false)), None, "two opencode in one folder: no guess");
+    assert_eq!(pick(&shown("", 20_000.0, false, true)).as_deref(), Some("ses_new"), "--continue: the folder's last session");
     let mut viewed = list.clone();
     viewed["data"][4]["time"]["viewed"] = json!(9_800.0);
-    assert_eq!(opencode::pick(&viewed, "/w", 7_000.0, false).as_deref(), Some("ses_mid"), "viewed counts as used");
+    assert_eq!(opencode::pick(&viewed, "/w", &shown("", 7_000.0, false, false)).as_deref(), Some("ses_mid"), "viewed counts as used");
+    let mut archived = list.clone();
+    archived["data"][1]["time"]["archived"] = json!(9_001.0);
+    assert_eq!(opencode::pick(&archived, "/w", &shown("", 7_000.0, false, false)).as_deref(), Some("ses_mid"), "archived is not shown");
+}
+
+#[test]
+fn the_terminal_title_names_the_session() {
+    let list = json!({"data": [
+        session("ses_old", "/w", 1_000.0, None),
+        session("ses_new", "/w", 9_000.0, None),
+        session("ses_sub", "/w", 9_500.0, Some("ses_old")),
+    ]});
+    let pick = |s: &opencode::Shown| opencode::pick(&list, "/w", s);
+    assert_eq!(pick(&shown("OC | Title of ses_old", 20_000.0, false, false)).as_deref(), Some("ses_old"), "resumed, not used since");
+    assert_eq!(pick(&shown("OC | Title of ses_o…", 20_000.0, true, false)).as_deref(), Some("ses_old"), "a cut title, and rivals: the title tells");
+    assert_eq!(pick(&shown("OC | Title of ses_sub", 0.0, false, false)).as_deref(), Some("ses_new"), "a subagent's title: the rule after it");
+    assert_eq!(pick(&shown("OpenCode", 0.0, false, false)).as_deref(), Some("ses_new"), "no session in the title: the rule after it");
+    assert_eq!(opencode::titled("OC | Fix it…"), Some(("Fix it", false)));
+    assert_eq!(opencode::titled("OC | Fix it"), Some(("Fix it", true)));
+    assert_eq!(opencode::titled("error: boom"), None);
 }
 
 #[test]

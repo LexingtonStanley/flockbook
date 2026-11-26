@@ -20,6 +20,10 @@ pub struct Entry {
     pub path: Option<String>,
     /// Seconds since 1970.
     pub checked: f64,
+    /// opencode: the terminal's title when its session was found (it names the session, so another title is another
+    /// session).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub title: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -67,10 +71,16 @@ fn pane_process(pane: &Pane) -> Option<&str> {
     pane.agent.as_ref().and_then(|a| a.process.as_deref())
 }
 
-/// The cache entry still holds: same agent kind, processes, and resolved child identity, checked lately, and its log is still there.
+/// What the entry keeps of the terminal's title: opencode's only (it names the session shown).
+fn pane_title(pane: &Pane, kind: &str) -> Option<String> {
+    (kind == "opencode").then(|| pane.agent.as_ref().map(|a| a.title.clone()).unwrap_or_default())
+}
+
+/// The cache entry still holds: same agent kind, processes, resolved child identity and (opencode) title, checked lately,
+/// and its log is still there.
 pub fn fresh(e: Option<&Entry>, pane: &Pane, kind: &str, now_s: f64) -> bool {
     let Some(e) = e else { return false };
-    if e.kind != kind || e.pids != pane.process_ids || e.process.as_deref() != pane_process(pane) || now_s - e.checked >= RECHECK_S {
+    if e.kind != kind || e.pids != pane.process_ids || e.process.as_deref() != pane_process(pane) || e.title != pane_title(pane, kind) || now_s - e.checked >= RECHECK_S {
         return false;
     }
     e.path.as_ref().is_some_and(|p| Path::new(p).exists())
@@ -204,7 +214,10 @@ fn resolve(ws: &[Workspace], resolver: &mut SessionResolver, cache: &Cache, cach
     let agents = local_agents(ws);
     let needs: Vec<Need> = agents
         .iter()
-        .map(|p| Need::new(&p.id, &p.agent.as_ref().unwrap().kind, &p.cwd, p.process_ids.clone()))
+        .map(|p| {
+            let a = p.agent.as_ref().unwrap();
+            Need::new(&p.id, &a.kind, &p.cwd, p.process_ids.clone()).with_title(&a.title)
+        })
         .collect();
     let found = resolver.resolve(&needs, &HashSet::new());
     let mut next = Cache { feeds: cache.feeds.clone(), ..Default::default() };
@@ -212,7 +225,7 @@ fn resolve(ws: &[Workspace], resolver: &mut SessionResolver, cache: &Cache, cach
         let k = &p.agent.as_ref().unwrap().kind;
         next.entries.insert(
             p.terminal_id.clone(),
-            Entry { kind: k.clone(), cwd: p.cwd.clone(), pids: p.process_ids.clone(), process: pane_process(p).map(String::from), path: latest(absolute(found.get(&p.id), k), k), checked: now_s },
+            Entry { kind: k.clone(), cwd: p.cwd.clone(), pids: p.process_ids.clone(), process: pane_process(p).map(String::from), path: latest(absolute(found.get(&p.id), k), k), checked: now_s, title: pane_title(p, k) },
         );
     }
     write_cache(&next, cache_path);
@@ -223,7 +236,7 @@ fn resolve(ws: &[Workspace], resolver: &mut SessionResolver, cache: &Cache, cach
 /// not start a process scan on each call.
 fn settled(e: Option<&Entry>, pane: &Pane, kind: &str, now_s: f64) -> bool {
     let Some(e) = e else { return false };
-    if e.kind != kind || e.pids != pane.process_ids || e.process.as_deref() != pane_process(pane) || now_s - e.checked >= RECHECK_S {
+    if e.kind != kind || e.pids != pane.process_ids || e.process.as_deref() != pane_process(pane) || e.title != pane_title(pane, kind) || now_s - e.checked >= RECHECK_S {
         return false;
     }
     e.path.as_ref().is_none_or(|p| Path::new(p).exists())

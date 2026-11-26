@@ -4,9 +4,10 @@
 //! `{"opencode_id", "opencode": message}` line per message, oldest first. The feed, its older pages and glance read the
 //! copy like any other log (`conversation/opencode.rs` parses its lines); [`sync`] brings it up to date first.
 //!
-//! The pane's session ([`pick`]): `--session`/`-s` from the agent's command line; else the root session (no parent)
-//! whose directory is the pane's cwd and that was used last, at or after the agent started. Two opencode panes in one
-//! cwd without `--session`: none. `--standalone` runs a private server that `opencode api` cannot reach: none.
+//! The pane's session ([`pick`]): `--session`/`-s` from the agent's command line; else, among the root sessions (no
+//! parent) whose directory is the pane's cwd, the one the terminal's title names (`OC | <session title>`), else the
+//! one used last at or after the agent started, else with `--continue` the one used last. Two opencode panes in one
+//! cwd that the titles do not tell apart: none. `--standalone` runs a private server `opencode api` cannot reach: none.
 
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -39,6 +40,8 @@ pub struct Launch {
     pub server: Option<String>,
     /// `--standalone`: a private server nothing else can reach.
     pub standalone: bool,
+    /// `--continue` / `-c`: the folder's last session.
+    pub resume: bool,
 }
 
 /// Reads [`Launch`] from the words of the agent's command line (an environment after them is skipped: no flag has
@@ -56,6 +59,7 @@ pub fn launch(words: &[&str]) -> Launch {
             "--session" | "-s" => l.session = value(),
             "--server" => l.server = value(),
             "--standalone" => l.standalone = true,
+            "--continue" | "-c" => l.resume = true,
             _ => {}
         }
     }
@@ -150,14 +154,32 @@ pub fn sessions(api: &dyn Api, cwd: &str) -> Option<Value> {
     api.call(&args(&["session.list", "--param", &format!("directory={cwd}"), "--param", &format!("limit={SESSIONS}")]))
 }
 
-/// The pane's session from `session.list` output (`{data: [session]}`): the root session in `cwd` used last, at or
-/// after `started_ms`. `rivals`: another opencode pane runs in the same cwd, so the choice would be a guess: none.
-pub fn pick(list: &Value, cwd: &str, started_ms: f64, rivals: bool) -> Option<String> {
-    if rivals {
-        return None;
-    }
+/// What tells a pane's session apart: the terminal's title, when the agent started, whether another opencode pane runs
+/// in the same cwd, and `--continue`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shown<'a> {
+    pub title: &'a str,
+    pub started_ms: f64,
+    pub rivals: bool,
+    pub resume: bool,
+}
+
+/// The session title a terminal title names (`OC | Fix the build`; cut ones end in `…`), and whether it is whole.
+pub fn titled(title: &str) -> Option<(&str, bool)> {
+    let t = title.strip_prefix("OC | ")?.trim();
+    let (t, whole) = match t.strip_suffix('…') {
+        Some(cut) => (cut.trim_end(), false),
+        None => (t, true),
+    };
+    (!t.is_empty()).then_some((t, whole))
+}
+
+/// The pane's session from `session.list` output (`{data: [session]}`), among the root sessions in `cwd` that are not
+/// archived: the one the terminal's title names (the newest of those), else the one used last since the agent started
+/// (none when another opencode pane runs in the cwd), else with `--continue` the one used last.
+pub fn pick(list: &Value, cwd: &str, shown: &Shown) -> Option<String> {
     let cwd = standardize_path(cwd);
-    let mut best: Option<(f64, &str)> = None;
+    let mut mine: Vec<(f64, &str, &str)> = vec![]; // (last use, id, title)
     for s in list.get("data").and_then(Value::as_array).into_iter().flatten() {
         let Some(id) = s.get("id").and_then(Value::as_str) else { continue };
         if s.get("parentID").is_some_and(|p| !p.is_null()) {
@@ -168,16 +190,24 @@ pub fn pick(list: &Value, cwd: &str, started_ms: f64, rivals: bool) -> Option<St
             continue;
         }
         let t = s.get("time");
-        let at = |k: &str| t.and_then(|t| t.get(k)).and_then(Value::as_f64).unwrap_or(0.0);
-        let used = at("updated").max(at("viewed"));
-        if used + START_SLACK_MS < started_ms || t.and_then(|t| t.get("archived")).is_some_and(|a| !a.is_null()) {
+        if t.and_then(|t| t.get("archived")).is_some_and(|a| !a.is_null()) {
             continue;
         }
-        if best.is_none_or(|(b, _)| used > b) {
-            best = Some((used, id));
+        let at = |k: &str| t.and_then(|t| t.get(k)).and_then(Value::as_f64).unwrap_or(0.0);
+        mine.push((at("updated").max(at("viewed")), id, s.get("title").and_then(Value::as_str).unwrap_or("")));
+    }
+    let newest = |c: &mut dyn Iterator<Item = &(f64, &str, &str)>| c.max_by(|a, b| a.0.total_cmp(&b.0)).map(|s| s.1.to_string());
+    if let Some((t, whole)) = titled(shown.title) {
+        let named = newest(&mut mine.iter().filter(|s| if whole { s.2 == t } else { s.2.starts_with(t) }));
+        if named.is_some() {
+            return named;
         }
     }
-    best.map(|(_, id)| id.to_string())
+    if shown.rivals {
+        return None;
+    }
+    newest(&mut mine.iter().filter(|s| s.0 + START_SLACK_MS >= shown.started_ms))
+        .or_else(|| if shown.resume { newest(&mut mine.iter()) } else { None })
 }
 
 /// Where the copies go when the helper names no folder.
