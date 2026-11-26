@@ -28,7 +28,6 @@ use crate::protocol::{JsonLines, PROTOCOL_VERSION, SIDECAR_VERSION};
 use crate::{cards, config, feed, glance, locate, paste, phone, queue, remote, status, summary, update};
 use herdr_core::hc::{HcClient, HcSession};
 use herdr_core::PaneScreen;
-use herdr_core::resolver::SessionResolver;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
@@ -189,8 +188,9 @@ pub fn run(argv: &[String]) -> String {
                 Err(e) => return r.fail("core", &format!("herdr-core: {e}")),
             };
             let now_s = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            let mut resolver = SessionResolver::new(&session.socket_path);
-            for l in glance::all(&ws, &mut resolver, opt("--cache").map(PathBuf::from).as_deref(), now_s) {
+            let cache = opt("--cache").map(PathBuf::from);
+            let mut resolver = locate::resolver(&session.socket_path, cache.as_deref());
+            for l in glance::all(&ws, &mut resolver, cache.as_deref(), now_s) {
                 r.out.emit_value(l);
             }
             r.finish(true)
@@ -375,7 +375,7 @@ fn find(terminal: &str, cache: Option<&Path>, recheck: bool) -> Result<(locate::
     let client = HcClient::new(session.clone(), 8, 22);
     let ws = client.snapshot().map_err(|e| ("core", format!("herdr-core: {e}")))?;
     let now_s = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-    let mut resolver = SessionResolver::new(&session.socket_path);
+    let mut resolver = locate::resolver(&session.socket_path, cache);
     let found = if recheck { locate::recheck(terminal, &ws, &mut resolver, cache, now_s) } else { locate::find(terminal, &ws, &mut resolver, cache, now_s).map(|f| (f, None)) };
     match found {
         Ok((f, was)) => Ok((f, was, client, locate::local_terminals(&ws))),

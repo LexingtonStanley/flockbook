@@ -40,7 +40,8 @@ The sidebar column has the id `sidebar`, so herdr-app's own ⌘B (`layout.toggle
 This needs herdr-app on macOS or Linux. The mod runs programs: its helper `flockbook-modfeed` (which runs
 `hc` and sends keys and text to an agent's terminal, only when you press or type) and, on macOS,
 `osascript` (the file dialog). On Linux the + file dialog is off: drop files on the chat or paste an image. It reads the agents' session logs outside its folder (`~/.claude/projects/`,
-`~/.codex/sessions/` and others; see `RECIPE.md`). It goes on the network only to check once a day for
+`~/.codex/sessions/` and others; see `RECIPE.md`). opencode 2 writes no log: the helper reads its sessions with
+`opencode api` (from opencode's background server) and keeps a copy of each one it shows in `flockbook/opencode/`. It goes on the network only to check once a day for
 a newer Flockbook (api.github.com); turn it off in the Flockbook settings (sidebar, **Flockbook**), which
 also has the status row and the helper on other machines. They are kept in `flockbook/config.json`.
 

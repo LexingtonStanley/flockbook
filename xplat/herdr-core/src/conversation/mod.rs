@@ -1,6 +1,6 @@
 //! Incremental parser for agent session logs (Swift: `ConversationParser` and its extensions), ported 1:1 from
-//! `rust/herdrkit`'s parser. Claude Code (with its queue log) and Codex here; pi, Grok Build, agy and Cursor in their
-//! own files. The format is detected per line. Feed lines in order; read `items()`.
+//! `rust/herdrkit`'s parser. Claude Code (with its queue log) and Codex here; pi, Grok Build, agy, Cursor and opencode
+//! in their own files. The format is detected per line. Feed lines in order; read `items()`.
 //!
 //! Beyond the Swift port, a pending `PermissionRequest` carries `detail` (Claude's Bash `description`) and
 //! `open_calls` (how many calls still wait for a result); neither changes what the Swift port emits otherwise.
@@ -8,6 +8,7 @@
 mod agy;
 mod cursor;
 mod grok;
+mod opencode;
 mod pi;
 
 use std::collections::HashMap;
@@ -219,6 +220,10 @@ impl ConversationParser {
         }
         if agy::is_agy(&o) {
             self.feed_agy(&o);
+            return;
+        }
+        if opencode::is_opencode(&o) {
+            self.feed_opencode(&o);
             return;
         }
         if !o.contains_key("uuid") {

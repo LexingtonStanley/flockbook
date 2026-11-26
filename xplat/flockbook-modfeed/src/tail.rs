@@ -235,6 +235,9 @@ pub fn each_line(path: &Path, from: u64, to: u64, mut f: impl FnMut(&str, u64)) 
 
 /// The model named by the newest assistant line, for logs with no status line.
 pub fn model(lines: &[String]) -> Option<String> {
+    if lines.first().is_some_and(|l| l.starts_with("{\"opencode")) {
+        return herdr_core::opencode::model(lines);
+    }
     for l in lines.iter().rev().filter(|l| l.contains("\"model\"")) {
         let Ok(o) = serde_json::from_str::<Value>(l) else { continue };
         if !o.is_object() {

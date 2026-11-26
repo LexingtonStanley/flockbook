@@ -122,9 +122,14 @@ pub fn write_bytes(d: &[u8], to: Option<&Path>) {
     }
 }
 
-/// Claude goes on in a new log and herdr keeps the old id: both paths follow `continued-in`.
+/// Claude goes on in a new log and herdr keeps the old id: both paths follow `continued-in`. opencode's log is a copy
+/// of its server's session: brought up to date first (once per call).
 fn latest(p: Option<String>, kind: &str) -> Option<String> {
     let p = p?;
+    if kind == "opencode" {
+        herdr_core::opencode::sync_once(Path::new(&p));
+        return Some(p);
+    }
     if kind != "claude" {
         return Some(p);
     }
@@ -152,6 +157,15 @@ pub fn recheck(terminal: &str, ws: &[Workspace], resolver: &mut SessionResolver,
 /// agent wrote. Proof that another log now is a new conversation of the same agent, not another agent.
 pub fn same_agent(was: &Entry, pane: &Pane, kind: &str, path: &str) -> bool {
     was.kind == kind && !was.pids.is_empty() && was.pids == pane.process_ids && was.process.as_deref() == pane_process(pane) && latest(was.path.clone(), kind).as_deref() == Some(path)
+}
+
+/// A resolver for this machine whose opencode copies go beside the cache file (`<cache dir>/opencode`).
+pub fn resolver(socket_path: &str, cache_path: Option<&Path>) -> SessionResolver {
+    let mut r = SessionResolver::new(socket_path);
+    if let Some(dir) = cache_path.and_then(Path::parent) {
+        r.opencode_dir = dir.join("opencode");
+    }
+    r
 }
 
 /// Finds the log for `terminal`. On a cache miss it resolves every local agent pane in one pass, so two panes never

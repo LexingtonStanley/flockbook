@@ -7,12 +7,15 @@
 //! 3. Grok Build only: the session `active_sessions.json` lists for the agent's pid.
 //! 4. Codex only: the rollout whose `session_meta` cwd is the pane's cwd and that started at or after the agent.
 //!    Exactly one unclaimed match, or none.
+//! 5. opencode only: its server's session for the pane (`opencode::pick`), kept as a copy in `opencode_dir`; the
+//!    path is the copy's.
 //!
 //! Processes and open files come from a [`ProcessSource`]: macOS (and other unix) run `ps` and `lsof` as Swift does;
 //! Linux reads `/proc` (with the environ, like `ps -E`); Windows lists processes with the `sysinfo` crate but cannot
 //! list open files (see `resolver/windows.rs`). The pure logic takes process lists as arguments, so checks inject
 //! them.
 
+use crate::opencode;
 use crate::session_log::{self, deleting_last_path_component, home_dir, is_abs_path, last_path_component, standardize_path};
 use crate::util::Date;
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
@@ -20,7 +23,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Instant, SystemTime};
 
@@ -169,6 +172,8 @@ pub struct SessionResolver {
     /// omp's sessions root, unless its process sets `PI_CODING_AGENT_DIR`.
     pub omp_sessions_dir: String,
     pub agy_dir: String,
+    /// Where opencode sessions are copied to (`crate::opencode`).
+    pub opencode_dir: PathBuf,
     /// The home folder the open-file route matches logs under (`~/.codex/sessions/`, `~/.claude/projects/`, ...).
     pub home: String,
     /// Unresolved panes are tried again after this (seconds); resolved ones are re-checked after `recheck`.
@@ -267,6 +272,7 @@ impl SessionResolver {
             pi_agent_dir: home.clone() + "/.pi/agent",
             omp_sessions_dir: home.clone() + "/.omp/agent/sessions",
             agy_dir: home.clone() + "/.gemini/antigravity-cli",
+            opencode_dir: opencode::default_dir(),
             home,
             retry: 5.0,
             recheck: 30.0,
@@ -445,12 +451,14 @@ impl SessionResolver {
             };
             // Two pi (or omp) in one cwd with one session folder: each one's start splits its files between them. Both
             // count: two cwds can name one folder (/w/a-b, /w/a/b), one cwd can have two (omp's PI_CODING_AGENT_DIR).
+            // opencode: two in one cwd are rivals too (the folder key is the kind).
             let pi_starts: Vec<(String, (String, String), Date)> = needs
                 .iter()
-                .filter(|n| pi_like(&n.kind))
+                .filter(|n| pi_like(&n.kind) || n.kind == "opencode")
                 .filter_map(|n| {
                     let cwd = standardize_path(&n.cwd);
-                    agent_of(n).map(|a| (n.pane_id.clone(), (self.pi_dir(&n.kind, &cwd, &a.line), cwd), a.start))
+                    let dir = |a: &Proc| if n.kind == "opencode" { "opencode".to_string() } else { self.pi_dir(&n.kind, &cwd, &a.line) };
+                    agent_of(n).map(|a| (n.pane_id.clone(), (dir(&a), cwd.clone()), a.start))
                 })
                 .collect();
             // Earliest agent first: it takes its file before a later one looks.
@@ -469,6 +477,7 @@ impl SessionResolver {
                             && old.pid == agent.as_ref().map(|a| a.pid)
                             && !self.pid_file_changed(old)
                             && n.kind != "agy"
+                            && n.kind != "opencode"
                             && (!pi_like(&n.kind) || Path::new(path).exists())
                             && !self.waits_for_log(old)
                         {
@@ -517,6 +526,26 @@ impl SessionResolver {
             }
         }
         out
+    }
+
+    /// opencode: the pane's session from its server, copied to `opencode_dir` and brought up to date; the copy's path.
+    fn opencode_copy(&self, n: &Need, agent: &Proc, claimed: &HashSet<String>, rivals: bool) -> Option<String> {
+        let l = opencode::launch(&opencode::words(agent));
+        if l.standalone {
+            return None;
+        }
+        let cli = opencode::Cli { exe: opencode::exe_for(agent), server: l.server.clone() };
+        let id = match l.session {
+            Some(s) => s,
+            None => opencode::pick(&opencode::sessions(&cli, &n.cwd)?, &n.cwd, agent.start.timestamp_millis() as f64, rivals)?,
+        };
+        let path = opencode::copy_path(&self.opencode_dir, &id)?;
+        let p = path.to_string_lossy().into_owned();
+        if is_claimed(&p, claimed) {
+            return None;
+        }
+        opencode::start(&path, &opencode::Header { session: id, cli: cli.clone() }, &cli);
+        Some(p)
     }
 
     /// The pid file changed since the entry was made (a stat, no process listing).
@@ -578,6 +607,9 @@ impl SessionResolver {
                 None => sid,
             };
             return if is_claimed(&sid, claimed) { (None, Some(pid)) } else { (Some(sid), Some(pid)) };
+        }
+        if n.kind == "opencode" {
+            return (self.opencode_copy(n, agent, claimed, !rivals.is_empty()), None);
         }
         let tree = subtree(agent.pid, procs);
         let mut open = (self.open_files)(&tree);
